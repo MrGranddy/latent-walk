@@ -1,7 +1,7 @@
 results/
 pretrained/
 __pycache__/
-.pyc
-.png
-.pkl
-.pth
+*.pyc
+*.png
+*.pkl
+*.pth
