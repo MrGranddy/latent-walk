@@ -10,9 +10,12 @@ from models.StyleGAN2.op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
 
 device_name = "cuda:0"
 
+
 def expand_to_bach(value, batch_size, target_type):
     try:
-        assert value.shape[0] == batch_size, f'batch size is not equal to the tensor size'
+        assert (
+            value.shape[0] == batch_size
+        ), f"batch size is not equal to the tensor size"
     except Exception:
         value = value * torch.ones(batch_size, dtype=target_type)
     return value.to(target_type)
@@ -43,7 +46,7 @@ class Upsample(nn.Module):
 
         self.factor = factor
         kernel = make_kernel(kernel) * (factor ** 2)
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         p = kernel.shape[0] - factor
 
@@ -64,7 +67,7 @@ class Downsample(nn.Module):
 
         self.factor = factor
         kernel = make_kernel(kernel)
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         p = kernel.shape[0] - factor
 
@@ -88,7 +91,7 @@ class Blur(nn.Module):
         if upsample_factor > 1:
             kernel = kernel * (upsample_factor ** 2)
 
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         self.pad = pad
 
@@ -130,9 +133,10 @@ class EqualConv2d(nn.Module):
         return out
 
     def __repr__(self):
-        return (
-            '{}({}, {},'.format(self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]) +
-            ' {}, stride={}, padding={})'.format(self.weight.shape[2], self.stride, self.padding)
+        return "{}({}, {},".format(
+            self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]
+        ) + " {}, stride={}, padding={})".format(
+            self.weight.shape[2], self.stride, self.padding
         )
 
 
@@ -161,13 +165,15 @@ class EqualLinear(nn.Module):
             out = fused_leaky_relu(out, self.bias * self.lr_mul)
 
         else:
-            out = F.linear(input, self.weight * self.scale, bias=self.bias * self.lr_mul)
+            out = F.linear(
+                input, self.weight * self.scale, bias=self.bias * self.lr_mul
+            )
 
         return out
 
     def __repr__(self):
-        return (
-            '{}({}, {})'.format(self.__class__.__name__, self.weight.shape[1], self.weight.shape[0])
+        return "{}({}, {})".format(
+            self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]
         )
 
 
@@ -234,10 +240,9 @@ class ModulatedConv2d(nn.Module):
         self.demodulate = demodulate
 
     def __repr__(self):
-        return (
-            '{}({}, {}, {}, '.format(self.__class__.__name__, self.in_channel, self.out_channel, self.kernel_size) +
-            'upsample={}, downsample={})'.format(self.upsample, self.downsample)
-        )
+        return "{}({}, {}, {}, ".format(
+            self.__class__.__name__, self.in_channel, self.out_channel, self.kernel_size
+        ) + "upsample={}, downsample={})".format(self.upsample, self.downsample)
 
     def forward(self, input, style):
         batch, in_channel, height, width = input.shape
@@ -390,7 +395,7 @@ class Generator(nn.Module):
         for i in range(n_mlp):
             layers.append(
                 EqualLinear(
-                    style_dim, style_dim, lr_mul=lr_mlp, activation='fused_lrelu'
+                    style_dim, style_dim, lr_mul=lr_mlp, activation="fused_lrelu"
                 )
             )
 
@@ -427,7 +432,9 @@ class Generator(nn.Module):
         for layer_idx in range(self.num_layers):
             res = (layer_idx + 5) // 2
             shape = [1, 1, 2 ** res, 2 ** res]
-            self.noises.register_buffer('noise_{}'.format(layer_idx), torch.randn(*shape))
+            self.noises.register_buffer(
+                "noise_{}".format(layer_idx), torch.randn(*shape)
+            )
 
         for i in range(3, self.log_size + 1):
             out_channel = self.channels[2 ** i]
@@ -489,7 +496,7 @@ class Generator(nn.Module):
         input_is_latent=False,
         noise=None,
         randomize_noise=False,
-        return_middle=False
+        return_middle=False,
     ):
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
@@ -498,7 +505,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -515,7 +525,7 @@ class Generator(nn.Module):
 
             if styles[0].ndim < 3:
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-                
+
             else:
                 latent = styles[0]
 
@@ -534,14 +544,20 @@ class Generator(nn.Module):
         skip = self.to_rgb1(out, latent[:, 1])
 
         i = 1
-        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(zip(
-            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
-        )):
+        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(
+            zip(
+                self.convs[::2],
+                self.convs[1::2],
+                noise[1::2],
+                noise[2::2],
+                self.to_rgbs,
+            )
+        ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            if( idx == 0 and return_middle ):
+            if idx == 0 and return_middle:
                 return out
-            #print(out.shape, idx)
+            # print(out.shape, idx)
             skip = to_rgb(out, latent[:, i + 2], skip)
 
             i += 2
@@ -570,7 +586,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -582,9 +601,7 @@ class Generator(nn.Module):
 
             styles = style_t
 
-
         return styles
-
 
     def clipped_forward_train(
         self,
@@ -596,7 +613,7 @@ class Generator(nn.Module):
         input_is_latent=False,
         noise=None,
         randomize_noise=False,
-        clip_idx=0
+        clip_idx=0,
     ):
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
@@ -605,7 +622,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -622,7 +642,7 @@ class Generator(nn.Module):
 
             if styles[0].ndim < 3:
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-                
+
             else:
                 latent = styles[0]
 
@@ -641,14 +661,20 @@ class Generator(nn.Module):
         skip = self.to_rgb1(out, latent[:, 1])
 
         i = 1
-        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(zip(
-            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
-        )):
+        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(
+            zip(
+                self.convs[::2],
+                self.convs[1::2],
+                noise[1::2],
+                noise[2::2],
+                self.to_rgbs,
+            )
+        ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            if( idx == clip_idx ):
+            if idx == clip_idx:
                 return out
-    
+
     def clipped_forward_eval(
         self,
         styles,
@@ -669,7 +695,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -686,7 +715,7 @@ class Generator(nn.Module):
 
             if styles[0].ndim < 3:
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-                
+
             else:
                 latent = styles[0]
 
@@ -705,12 +734,18 @@ class Generator(nn.Module):
         skip = self.to_rgb1(out, latent[:, 1])
 
         i = 1
-        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(zip(
-            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
-        )):
+        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(
+            zip(
+                self.convs[::2],
+                self.convs[1::2],
+                noise[1::2],
+                noise[2::2],
+                self.to_rgbs,
+            )
+        ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            if( idx == clip_idx):
+            if idx == clip_idx:
                 out = transform(out)[0]
             skip = to_rgb(out, latent[:, i + 2], skip)
 
@@ -744,7 +779,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -761,7 +799,7 @@ class Generator(nn.Module):
 
             if styles[0].ndim < 3:
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-                
+
             else:
                 latent = styles[0]
 
@@ -780,10 +818,18 @@ class Generator(nn.Module):
         skip = self.to_rgb1(out, latent[:, 1])
 
         i = 1
-        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(zip( self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs )):
+        for idx, (conv1, conv2, noise1, noise2, to_rgb) in enumerate(
+            zip(
+                self.convs[::2],
+                self.convs[1::2],
+                noise[1::2],
+                noise[2::2],
+                self.to_rgbs,
+            )
+        ):
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
-            if( idx == clip_idx ):
+            if idx == clip_idx:
                 out = transform(out)
             skip = to_rgb(out, latent[:, i + 2], skip)
 
@@ -904,7 +950,7 @@ class Discriminator(nn.Module):
 
         self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
         self.final_linear = nn.Sequential(
-            EqualLinear(channels[4] * 4 * 4, channels[4], activation='fused_lrelu'),
+            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
             EqualLinear(channels[4], 1),
         )
 
@@ -927,5 +973,3 @@ class Discriminator(nn.Module):
         out = self.final_linear(out)
 
         return out
-
-

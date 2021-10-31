@@ -21,7 +21,9 @@ from op import FusedLeakyReLU, fused_leaky_relu, upfirdn2d
 
 def expand_to_bach(value, batch_size, target_type):
     try:
-        assert value.shape[0] == batch_size, f'batch size is not equal to the tensor size'
+        assert (
+            value.shape[0] == batch_size
+        ), f"batch size is not equal to the tensor size"
     except Exception:
         value = value * torch.ones(batch_size, dtype=target_type)
     return value.to(target_type)
@@ -52,7 +54,7 @@ class Upsample(nn.Module):
 
         self.factor = factor
         kernel = make_kernel(kernel) * (factor ** 2)
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         p = kernel.shape[0] - factor
 
@@ -73,7 +75,7 @@ class Downsample(nn.Module):
 
         self.factor = factor
         kernel = make_kernel(kernel)
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         p = kernel.shape[0] - factor
 
@@ -97,7 +99,7 @@ class Blur(nn.Module):
         if upsample_factor > 1:
             kernel = kernel * (upsample_factor ** 2)
 
-        self.register_buffer('kernel', kernel)
+        self.register_buffer("kernel", kernel)
 
         self.pad = pad
 
@@ -139,9 +141,10 @@ class EqualConv2d(nn.Module):
         return out
 
     def __repr__(self):
-        return (
-            '{}({}, {},'.format(self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]) +
-            ' {}, stride={}, padding={})'.format(self.weight.shape[2], self.stride, self.padding)
+        return "{}({}, {},".format(
+            self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]
+        ) + " {}, stride={}, padding={})".format(
+            self.weight.shape[2], self.stride, self.padding
         )
 
 
@@ -170,13 +173,15 @@ class EqualLinear(nn.Module):
             out = fused_leaky_relu(out, self.bias * self.lr_mul)
 
         else:
-            out = F.linear(input, self.weight * self.scale, bias=self.bias * self.lr_mul)
+            out = F.linear(
+                input, self.weight * self.scale, bias=self.bias * self.lr_mul
+            )
 
         return out
 
     def __repr__(self):
-        return (
-            '{}({}, {})'.format(self.__class__.__name__, self.weight.shape[1], self.weight.shape[0])
+        return "{}({}, {})".format(
+            self.__class__.__name__, self.weight.shape[1], self.weight.shape[0]
         )
 
 
@@ -242,10 +247,9 @@ class ModulatedConv2d(nn.Module):
         self.demodulate = demodulate
 
     def __repr__(self):
-        return (
-            '{}({}, {}, {}, '.format(self.__class__.__name__, self.in_channel, self.out_channel, self.kernel_size) +
-            'upsample={}, downsample={})'.format(self.upsample, self.downsample)
-        )
+        return "{}({}, {}, {}, ".format(
+            self.__class__.__name__, self.in_channel, self.out_channel, self.kernel_size
+        ) + "upsample={}, downsample={})".format(self.upsample, self.downsample)
 
     def forward(self, input, style):
         batch, in_channel, height, width = input.shape
@@ -312,30 +316,47 @@ class ModulatedConv2dPatchedFixedBasisDelta(nn.Module):
         self.demodulate = conv_to_patch.demodulate
         self.basis_vectors = basis_vectors
 
-        assert self.basis_vectors.shape[1:] == self.weight.shape, \
-            f'unconsisted basis and weight {self.basis_vectors.shape[1:]} != {self.weight.shape}'
+        assert (
+            self.basis_vectors.shape[1:] == self.weight.shape
+        ), f"unconsisted basis and weight {self.basis_vectors.shape[1:]} != {self.weight.shape}"
 
         basis_dim = len(self.basis_vectors)
-        self.direction_to_basis_coefs = nn.Parameter(torch.randn((directions_count, basis_dim)))
+        self.direction_to_basis_coefs = nn.Parameter(
+            torch.randn((directions_count, basis_dim))
+        )
 
     def weight_shifts(self, batch):
         # expand scalar shift params if required
         basis_size = len(self.basis_vectors)
-        batch_directions = expand_to_bach(self.batch_directions, batch, torch.long).cuda()
+        batch_directions = expand_to_bach(
+            self.batch_directions, batch, torch.long
+        ).cuda()
         batch_shifts = expand_to_bach(self.batch_shifts, batch, torch.float32).cuda()
 
         # deformation
-        batch_weight_delta = torch.stack(batch * [self.basis_vectors], dim=0) # (batch_size, basis_size, *weight.shape)
-        batch_basis_coefs = self.direction_to_basis_coefs[batch_directions] # (batch_size, basis_size)
+        batch_weight_delta = torch.stack(
+            batch * [self.basis_vectors], dim=0
+        )  # (batch_size, basis_size, *weight.shape)
+        batch_basis_coefs = self.direction_to_basis_coefs[
+            batch_directions
+        ]  # (batch_size, basis_size)
 
-        batch_weight_delta = batch_weight_delta.view(batch, basis_size, -1) # (batch_size, basis_size, -1)
-        batch_basis_coefs = batch_basis_coefs.unsqueeze(-1) # (batch_size, basis_size, -1)
+        batch_weight_delta = batch_weight_delta.view(
+            batch, basis_size, -1
+        )  # (batch_size, basis_size, -1)
+        batch_basis_coefs = batch_basis_coefs.unsqueeze(
+            -1
+        )  # (batch_size, basis_size, -1)
 
-        batch_weight_delta = (batch_weight_delta * batch_basis_coefs).sum(dim=1) # (batch_size, -1)
+        batch_weight_delta = (batch_weight_delta * batch_basis_coefs).sum(
+            dim=1
+        )  # (batch_size, -1)
         batch_weight_delta = F.normalize(batch_weight_delta, p=2, dim=1)
-        batch_weight_delta *= batch_shifts[:, None] # (batch_size, -1)
+        batch_weight_delta *= batch_shifts[:, None]  # (batch_size, -1)
 
-        batch_weight_delta = batch_weight_delta.view(batch, *self.weight.shape[-4:]) # (batch_size, c_out, c_in, k_x, k_y)
+        batch_weight_delta = batch_weight_delta.view(
+            batch, *self.weight.shape[-4:]
+        )  # (batch_size, c_out, c_in, k_x, k_y)
         return batch_weight_delta
 
     def forward(self, input, style):
@@ -345,7 +366,7 @@ class ModulatedConv2dPatchedFixedBasisDelta(nn.Module):
         if self.is_deformated:
             weight = weight + self.weight_shifts(batch)
 
-        # further code is from original ModulatedConv2d 
+        # further code is from original ModulatedConv2d
         style = self.modulation(style).view(batch, 1, in_channel, 1, 1)
         weight = self.scale * weight * style
 
@@ -407,7 +428,12 @@ class ModulatedConv2dPatchedSVDBasisDelta(nn.Module):
         self.modulation = conv_to_patch.modulation
         self.demodulate = conv_to_patch.demodulate
 
-        weight_matrix = conv_to_patch.weight.cpu().detach().numpy().reshape((conv_to_patch.weight.shape[-4:]))
+        weight_matrix = (
+            conv_to_patch.weight.cpu()
+            .detach()
+            .numpy()
+            .reshape((conv_to_patch.weight.shape[-4:]))
+        )
         c_out, c_in, k_x, k_y = weight_matrix.shape
         weight_matrix = np.transpose(weight_matrix, (2, 3, 1, 0))
         weight_matrix = np.reshape(weight_matrix, (k_x * k_y * c_in, c_out))
@@ -421,16 +447,22 @@ class ModulatedConv2dPatchedSVDBasisDelta(nn.Module):
 
         self.direction_to_eigenvalues_delta = torch.randn((directions_count, len(s)))
         self.direction_to_eigenvalues_delta = nn.Parameter(
-            self.direction_to_eigenvalues_delta,
-            requires_grad=True)
+            self.direction_to_eigenvalues_delta, requires_grad=True
+        )
 
     def weight_shifts(self, batch):
         # expand scalar shift params if required
-        batch_directions = expand_to_bach(self.batch_directions, batch, torch.long).cuda()
+        batch_directions = expand_to_bach(
+            self.batch_directions, batch, torch.long
+        ).cuda()
         batch_shifts = expand_to_bach(self.batch_shifts, batch, torch.float32).cuda()
 
-        batch_eigenvalues_delta = self.direction_to_eigenvalues_delta[batch_directions] # (batch, len(s))
-        batch_weight_delta = self.u @ torch.diag_embed(batch_eigenvalues_delta) @ self.vh
+        batch_eigenvalues_delta = self.direction_to_eigenvalues_delta[
+            batch_directions
+        ]  # (batch, len(s))
+        batch_weight_delta = (
+            self.u @ torch.diag_embed(batch_eigenvalues_delta) @ self.vh
+        )
 
         c_out, c_in, k_x, k_y = self.weight.shape[-4:]
         batch_weight_delta = F.normalize(batch_weight_delta.view(batch, -1), dim=1, p=2)
@@ -450,7 +482,7 @@ class ModulatedConv2dPatchedSVDBasisDelta(nn.Module):
             weight = self.weight
             weight = weight + self.weight_shifts(batch)
 
-        # further code is from original ModulatedConv2d 
+        # further code is from original ModulatedConv2d
         style = self.modulation(style).view(batch, 1, in_channel, 1, 1)
         weight = self.scale * weight * style
 
@@ -599,7 +631,7 @@ class Generator(nn.Module):
         for i in range(n_mlp):
             layers.append(
                 EqualLinear(
-                    style_dim, style_dim, lr_mul=lr_mlp, activation='fused_lrelu'
+                    style_dim, style_dim, lr_mul=lr_mlp, activation="fused_lrelu"
                 )
             )
 
@@ -636,7 +668,9 @@ class Generator(nn.Module):
         for layer_idx in range(self.num_layers):
             res = (layer_idx + 5) // 2
             shape = [1, 1, 2 ** res, 2 ** res]
-            self.noises.register_buffer('noise_{}'.format(layer_idx), torch.randn(*shape))
+            self.noises.register_buffer(
+                "noise_{}".format(layer_idx), torch.randn(*shape)
+            )
 
         for i in range(3, self.log_size + 1):
             out_channel = self.channels[2 ** i]
@@ -695,7 +729,7 @@ class Generator(nn.Module):
         truncation_latent=None,
         input_is_latent=False,
         noise=None,
-        randomize_noise=False
+        randomize_noise=False,
     ):
         if not input_is_latent:
             styles = [self.style(s) for s in styles]
@@ -704,7 +738,10 @@ class Generator(nn.Module):
             if randomize_noise:
                 noise = [None] * self.num_layers
             else:
-                noise = [getattr(self.noises, 'noise_{}'.format(i)) for i in range(self.num_layers)]
+                noise = [
+                    getattr(self.noises, "noise_{}".format(i))
+                    for i in range(self.num_layers)
+                ]
 
         if truncation < 1:
             style_t = []
@@ -721,7 +758,7 @@ class Generator(nn.Module):
 
             if styles[0].ndim < 3:
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-                
+
             else:
                 latent = styles[0]
 
@@ -864,7 +901,7 @@ class Discriminator(nn.Module):
 
         self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
         self.final_linear = nn.Sequential(
-            EqualLinear(channels[4] * 4 * 4, channels[4], activation='fused_lrelu'),
+            EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
             EqualLinear(channels[4], 1),
         )
 
@@ -889,83 +926,86 @@ class Discriminator(nn.Module):
         return out
 
 
-
 def convert_modconv(vars, source_name, target_name, flip=False):
-    weight = vars[source_name + '/weight'].value().eval()
-    mod_weight = vars[source_name + '/mod_weight'].value().eval()
-    mod_bias = vars[source_name + '/mod_bias'].value().eval()
-    noise = vars[source_name + '/noise_strength'].value().eval()
-    bias = vars[source_name + '/bias'].value().eval()
+    weight = vars[source_name + "/weight"].value().eval()
+    mod_weight = vars[source_name + "/mod_weight"].value().eval()
+    mod_bias = vars[source_name + "/mod_bias"].value().eval()
+    noise = vars[source_name + "/noise_strength"].value().eval()
+    bias = vars[source_name + "/bias"].value().eval()
 
     dic = {
-        'conv.weight': np.expand_dims(weight.transpose((3, 2, 0, 1)), 0),
-        'conv.modulation.weight': mod_weight.transpose((1, 0)),
-        'conv.modulation.bias': mod_bias + 1,
-        'noise.weight': np.array([noise]),
-        'activate.bias': bias,
+        "conv.weight": np.expand_dims(weight.transpose((3, 2, 0, 1)), 0),
+        "conv.modulation.weight": mod_weight.transpose((1, 0)),
+        "conv.modulation.bias": mod_bias + 1,
+        "noise.weight": np.array([noise]),
+        "activate.bias": bias,
     }
 
     dic_torch = {}
 
     for k, v in dic.items():
-        dic_torch[target_name + '.' + k] = torch.from_numpy(v)
+        dic_torch[target_name + "." + k] = torch.from_numpy(v)
 
     if flip:
-        dic_torch[target_name + '.conv.weight'] = torch.flip(
-            dic_torch[target_name + '.conv.weight'], [3, 4]
+        dic_torch[target_name + ".conv.weight"] = torch.flip(
+            dic_torch[target_name + ".conv.weight"], [3, 4]
         )
 
     return dic_torch
 
 
 def convert_conv(vars, source_name, target_name, bias=True, start=0):
-    weight = vars[source_name + '/weight'].value().eval()
-    
-    dic = {'weight': weight.transpose((3, 2, 0, 1))}
-    
+    weight = vars[source_name + "/weight"].value().eval()
+
+    dic = {"weight": weight.transpose((3, 2, 0, 1))}
+
     if bias:
-        dic['bias'] = vars[source_name + '/bias'].value().eval()
-    
+        dic["bias"] = vars[source_name + "/bias"].value().eval()
+
     dic_torch = {}
-    dic_torch[target_name + '.{}.weight'.format(start)] = torch.from_numpy(dic['weight'])
-    
+    dic_torch[target_name + ".{}.weight".format(start)] = torch.from_numpy(
+        dic["weight"]
+    )
+
     if bias:
-        dic_torch[target_name + '.{}.bias'.format(start + 1)] = torch.from_numpy(dic['bias'])
-        
+        dic_torch[target_name + ".{}.bias".format(start + 1)] = torch.from_numpy(
+            dic["bias"]
+        )
+
     return dic_torch
 
 
 def convert_torgb(vars, source_name, target_name):
-    weight = vars[source_name + '/weight'].value().eval()
-    mod_weight = vars[source_name + '/mod_weight'].value().eval()
-    mod_bias = vars[source_name + '/mod_bias'].value().eval()
-    bias = vars[source_name + '/bias'].value().eval()
+    weight = vars[source_name + "/weight"].value().eval()
+    mod_weight = vars[source_name + "/mod_weight"].value().eval()
+    mod_bias = vars[source_name + "/mod_bias"].value().eval()
+    bias = vars[source_name + "/bias"].value().eval()
 
     dic = {
-        'conv.weight': np.expand_dims(weight.transpose((3, 2, 0, 1)), 0),
-        'conv.modulation.weight': mod_weight.transpose((1, 0)),
-        'conv.modulation.bias': mod_bias + 1,
-        'bias': bias.reshape((1, 3, 1, 1)),
+        "conv.weight": np.expand_dims(weight.transpose((3, 2, 0, 1)), 0),
+        "conv.modulation.weight": mod_weight.transpose((1, 0)),
+        "conv.modulation.bias": mod_bias + 1,
+        "bias": bias.reshape((1, 3, 1, 1)),
     }
 
     dic_torch = {}
 
     for k, v in dic.items():
-        dic_torch[target_name + '.' + k] = torch.from_numpy(v)
+        dic_torch[target_name + "." + k] = torch.from_numpy(v)
 
     return dic_torch
 
 
 def convert_dense(vars, source_name, target_name):
-    weight = vars[source_name + '/weight'].value().eval()
-    bias = vars[source_name + '/bias'].value().eval()
+    weight = vars[source_name + "/weight"].value().eval()
+    bias = vars[source_name + "/bias"].value().eval()
 
-    dic = {'weight': weight.transpose((1, 0)), 'bias': bias}
+    dic = {"weight": weight.transpose((1, 0)), "bias": bias}
 
     dic_torch = {}
 
     for k, v in dic.items():
-        dic_torch[target_name + '.' + k] = torch.from_numpy(v)
+        dic_torch[target_name + "." + k] = torch.from_numpy(v)
 
     return dic_torch
 
@@ -973,32 +1013,56 @@ def convert_dense(vars, source_name, target_name):
 def update(state_dict, new):
     for k, v in new.items():
         if k not in state_dict:
-            raise KeyError(k + ' is not found')
+            raise KeyError(k + " is not found")
 
         if v.shape != state_dict[k].shape:
-            raise ValueError('Shape mismatch: {} vs {}'.format(v.shape, state_dict[k].shape))
+            raise ValueError(
+                "Shape mismatch: {} vs {}".format(v.shape, state_dict[k].shape)
+            )
 
         state_dict[k] = v
-        
-        
+
+
 def discriminator_fill_statedict(statedict, vars, size):
     log_size = int(math.log(size, 2))
-    
-    update(statedict, convert_conv(vars, '{}x{}/FromRGB'.format(size, size), 'convs.0'))
+
+    update(statedict, convert_conv(vars, "{}x{}/FromRGB".format(size, size), "convs.0"))
 
     conv_i = 1
 
     for i in range(log_size - 2, 0, -1):
         reso = 4 * 2 ** i
-        update(statedict, convert_conv(vars, '{}x{}/Conv0'.format(reso, reso), 'convs.{}.conv1'.format(conv_i)))
-        update(statedict, convert_conv(vars, '{}x{}/Conv1_down'.format(reso, reso), 'convs.{}.conv2'.format(conv_i), start=1))
-        update(statedict, convert_conv(vars, '{}x{}/Skip'.format(reso, reso), 'convs.{}.skip'.format(conv_i), start=1, bias=False))
+        update(
+            statedict,
+            convert_conv(
+                vars, "{}x{}/Conv0".format(reso, reso), "convs.{}.conv1".format(conv_i)
+            ),
+        )
+        update(
+            statedict,
+            convert_conv(
+                vars,
+                "{}x{}/Conv1_down".format(reso, reso),
+                "convs.{}.conv2".format(conv_i),
+                start=1,
+            ),
+        )
+        update(
+            statedict,
+            convert_conv(
+                vars,
+                "{}x{}/Skip".format(reso, reso),
+                "convs.{}.skip".format(conv_i),
+                start=1,
+                bias=False,
+            ),
+        )
         conv_i += 1
-        
-    update(statedict, convert_conv(vars, '4x4/Conv', 'final_conv'))
-    update(statedict, convert_dense(vars, '4x4/Dense0', 'final_linear.0'))
-    update(statedict, convert_dense(vars, 'Output', 'final_linear.1'))
-    
+
+    update(statedict, convert_conv(vars, "4x4/Conv", "final_conv"))
+    update(statedict, convert_dense(vars, "4x4/Dense0", "final_linear.0"))
+    update(statedict, convert_dense(vars, "Output", "final_linear.1"))
+
     return statedict
 
 
@@ -1006,27 +1070,36 @@ def fill_statedict(state_dict, vars, size):
     log_size = int(math.log(size, 2))
 
     for i in range(8):
-        update(state_dict, convert_dense(vars, 'G_mapping/Dense{}'.format(i), 'style.{}'.format(i + 1)))
+        update(
+            state_dict,
+            convert_dense(
+                vars, "G_mapping/Dense{}".format(i), "style.{}".format(i + 1)
+            ),
+        )
 
     update(
         state_dict,
         {
-            'input.input': torch.from_numpy(
-                vars['G_synthesis/4x4/Const/const'].value().eval()
+            "input.input": torch.from_numpy(
+                vars["G_synthesis/4x4/Const/const"].value().eval()
             )
         },
     )
 
-    update(state_dict, convert_torgb(vars, 'G_synthesis/4x4/ToRGB', 'to_rgb1'))
+    update(state_dict, convert_torgb(vars, "G_synthesis/4x4/ToRGB", "to_rgb1"))
 
     for i in range(log_size - 2):
         reso = 4 * 2 ** (i + 1)
         update(
             state_dict,
-            convert_torgb(vars, 'G_synthesis/{}x{}/ToRGB'.format(reso, reso), 'to_rgbs.{}'.format(i)),
+            convert_torgb(
+                vars,
+                "G_synthesis/{}x{}/ToRGB".format(reso, reso),
+                "to_rgbs.{}".format(i),
+            ),
         )
 
-    update(state_dict, convert_modconv(vars, 'G_synthesis/4x4/Conv', 'conv1'))
+    update(state_dict, convert_modconv(vars, "G_synthesis/4x4/Conv", "conv1"))
 
     conv_i = 0
 
@@ -1036,8 +1109,8 @@ def fill_statedict(state_dict, vars, size):
             state_dict,
             convert_modconv(
                 vars,
-                'G_synthesis/{}x{}/Conv0_up'.format(reso, reso),
-                'convs.{}'.format(conv_i),
+                "G_synthesis/{}x{}/Conv0_up".format(reso, reso),
+                "convs.{}".format(conv_i),
                 flip=True,
             ),
         )
@@ -1045,8 +1118,8 @@ def fill_statedict(state_dict, vars, size):
             state_dict,
             convert_modconv(
                 vars,
-                'G_synthesis/{}x{}/Conv1'.format(reso, reso),
-                'convs.{}'.format(conv_i +  1)
+                "G_synthesis/{}x{}/Conv1".format(reso, reso),
+                "convs.{}".format(conv_i + 1),
             ),
         )
         conv_i += 2
@@ -1055,8 +1128,8 @@ def fill_statedict(state_dict, vars, size):
         update(
             state_dict,
             {
-                'noises.noise_{}'.format(i): torch.from_numpy(
-                    vars['G_synthesis/noise{}'.format(i)].value().eval()
+                "noises.noise_{}".format(i): torch.from_numpy(
+                    vars["G_synthesis/noise{}".format(i)].value().eval()
                 )
             },
         )
@@ -1064,14 +1137,14 @@ def fill_statedict(state_dict, vars, size):
     return state_dict
 
 
-if __name__ == '__main__':
-    device = 'cuda'
+if __name__ == "__main__":
+    device = "cuda"
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--repo', type=str, required=True)
-    parser.add_argument('--gen', action='store_true')
-    parser.add_argument('--disc', action='store_true')
-    parser.add_argument('path', metavar='PATH')
+    parser.add_argument("--repo", type=str, required=True)
+    parser.add_argument("--gen", action="store_true")
+    parser.add_argument("--disc", action="store_true")
+    parser.add_argument("path", metavar="PATH")
 
     args = parser.parse_args()
 
@@ -1082,7 +1155,7 @@ if __name__ == '__main__':
 
     tflib.init_tf()
 
-    with open(args.path, 'rb') as f:
+    with open(args.path, "rb") as f:
         generator, discriminator, g_ema = pickle.load(f)
 
     size = g_ema.output_shape[2]
@@ -1093,42 +1166,49 @@ if __name__ == '__main__':
 
     g.load_state_dict(state_dict)
 
-    latent_avg = torch.from_numpy(g_ema.vars['dlatent_avg'].value().eval())
-    
-    ckpt = {'g_ema': state_dict, 'latent_avg': latent_avg}
-    
+    latent_avg = torch.from_numpy(g_ema.vars["dlatent_avg"].value().eval())
+
+    ckpt = {"g_ema": state_dict, "latent_avg": latent_avg}
+
     if args.gen:
         g_train = Generator(size, 512, 8)
         g_train_state = g_train.state_dict()
         g_train_state = fill_statedict(g_train_state, generator.vars, size)
-        ckpt['g'] = g_train_state
-        
+        ckpt["g"] = g_train_state
+
     if args.disc:
         disc = Discriminator(size)
         d_state = disc.state_dict()
         d_state = discriminator_fill_statedict(d_state, discriminator.vars, size)
-        ckpt['d'] = d_state
+        ckpt["d"] = d_state
 
     name = os.path.splitext(os.path.basename(args.path))[0]
-    torch.save(ckpt, name + '.pt')
+    torch.save(ckpt, name + ".pt")
 
     batch_size = {256: 16, 512: 9, 1024: 4}
     n_sample = batch_size.get(size, 25)
 
     g = g.to(device)
 
-    z = np.random.RandomState(0).randn(n_sample, 512).astype('float32')
+    z = np.random.RandomState(0).randn(n_sample, 512).astype("float32")
 
     with torch.no_grad():
-        img_pt, _ = g([torch.from_numpy(z).to(device)], truncation=0.5, truncation_latent=latent_avg.to(device))
+        img_pt, _ = g(
+            [torch.from_numpy(z).to(device)],
+            truncation=0.5,
+            truncation_latent=latent_avg.to(device),
+        )
 
     Gs_kwargs = dnnlib.EasyDict()
     Gs_kwargs.randomize_noise = False
     img_tf = g_ema.run(z, None, **Gs_kwargs)
     img_tf = torch.from_numpy(img_tf).to(device)
 
-    img_diff = ((img_pt + 1) / 2).clamp(0.0, 1.0) - ((img_tf.to(device) + 1) / 2).clamp(0.0, 1.0)
+    img_diff = ((img_pt + 1) / 2).clamp(0.0, 1.0) - ((img_tf.to(device) + 1) / 2).clamp(
+        0.0, 1.0
+    )
 
     img_concat = torch.cat((img_tf, img_pt, img_diff), dim=0)
-    utils.save_image(img_concat, name + '.png', nrow=n_sample, normalize=True, range=(-1, 1))
-
+    utils.save_image(
+        img_concat, name + ".png", nrow=n_sample, normalize=True, range=(-1, 1)
+    )

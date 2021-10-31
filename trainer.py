@@ -7,7 +7,13 @@ import datetime
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 import argparse
-from model import StyleGan, ImageEncoder, LatentMapping, Discriminator
+from model import (
+    StyleGan,
+    ImageEncoder,
+    Discriminator,
+    LatentMapping,
+    get_opts_and_encoder_sd,
+)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,52 +28,66 @@ min_value = 0.5
 
 device_name = "cuda:0"
 
+
 def scheduler(optim, index, init_lr):
     for param_group in optim.param_groups:
-        param_group['lr'] = init_lr * ( 0.9998 ** (index) )
+        param_group["lr"] = init_lr * (0.9998 ** (index))
+
 
 def plot_grad_flow(named_parameters):
     ave_grads = []
     layers = []
     for n, p in named_parameters:
-        if(p.requires_grad) and ("bias" not in n):
+        if (p.requires_grad) and ("bias" not in n):
             layers.append(n)
             ave_grads.append(p.grad.abs().mean().cpu())
     plt.plot(ave_grads, alpha=0.3, color="b")
-    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
-    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical", fontsize=4)
+    plt.hlines(0, 0, len(ave_grads) + 1, linewidth=1, color="k")
+    plt.xticks(range(0, len(ave_grads), 1), layers, rotation="vertical", fontsize=4)
     plt.xlim(xmin=0, xmax=len(ave_grads))
     plt.xlabel("Layers")
     plt.ylabel("average gradient")
     plt.title("Gradient flow")
     plt.grid(True)
 
+
 def prepare_folder(x):
     if os.path.exists(x) and os.path.isdir(x):
         shutil.rmtree(x)
     os.makedirs(x)
 
+
 def sample_zs(batch_size, dim_z, mean=0.0, std=1.0):
-    zs = torch.empty([batch_size] + [dim_z], device=device_name).normal_(mean=mean, std=std)
+    zs = torch.empty([batch_size] + [dim_z], device=device_name).normal_(
+        mean=mean, std=std
+    )
     return zs
+
 
 def to_image(tensor, img_res):
     tensor = torch.clamp(tensor, -1, 1)
     tensor = (tensor + 1) / 2
     tensor.clamp(0, 1)
-    tensor = F.interpolate(tensor, size=(img_res, img_res), mode="bilinear", align_corners=True)
+    tensor = F.interpolate(
+        tensor, size=(img_res, img_res), mode="bilinear", align_corners=True
+    )
     return (255 * tensor.cpu().detach()).to(torch.uint8).permute(0, 2, 3, 1).numpy()
+
 
 class Trainer:
     def __init__(self):
         a = datetime.datetime.now()
-        self.exp_name = '{}_{}_{}-{}_{}_{}_{}'.format(a.year, a.month, a.day, a.hour, a.minute, a.second, a.microsecond)
-        self.main_path = 'results/{}_{}_{}-{}_{}_{}_{}'.format(a.year, a.month, a.day, a.hour, a.minute, a.second, a.microsecond)
-        self.checkpoint_dir = '{}/checkpoints'.format(self.main_path)
-        self.loss_dir = '{}/losses'.format(self.main_path)
-        self.results_dir = '{}/visual_results'.format(self.main_path)
-        self.grads_dir = '{}/grads'.format(self.main_path)
-        self.codes_dir = '{}/codes'.format(self.main_path)
+        self.exp_name = "{}_{}_{}-{}_{}_{}_{}".format(
+            a.year, a.month, a.day, a.hour, a.minute, a.second, a.microsecond
+        )
+        self.main_path = "results/{}_{}_{}-{}_{}_{}_{}".format(
+            a.year, a.month, a.day, a.hour, a.minute, a.second, a.microsecond
+        )
+        self.checkpoint_dir = "{}/checkpoints".format(self.main_path)
+        self.loss_dir = "{}/losses".format(self.main_path)
+        self.results_dir = "{}/visual_results".format(self.main_path)
+        self.grads_dir = "{}/grads".format(self.main_path)
+        self.codes_dir = "{}/codes".format(self.main_path)
         os.mkdir(self.main_path)
         os.mkdir(self.checkpoint_dir)
         os.mkdir(self.loss_dir)
@@ -77,21 +97,19 @@ class Trainer:
 
         for f_name in os.listdir("."):
             if f_name[-3:] == ".py":
-                shutil.copyfile( f_name, os.path.join(self.codes_dir, f_name) )
+                shutil.copyfile(f_name, os.path.join(self.codes_dir, f_name))
 
-        self.losses = {
-            "id": [],
-            "discriminator": [],
-            "generator": []
-        }
+        self.losses = {"id": [], "discriminator": [], "generator": []}
+
+        opts, sd, latent_avg = get_opts_and_encoder_sd()
 
         self.gan = StyleGan().eval().to(device_name)
-        self.encoder = ImageEncoder().eval().to(device_name)
-        self.mapping = LatentMapping().train().to(device_name)
+        self.encoder = ImageEncoder(opts, sd, 256).eval().to(device_name)
+        self.mapping = LatentMapping(opts, latent_avg).train().to(device_name)
         self.discriminator = Discriminator().train().to(device_name)
 
         self.lambda_discriminator = 1.0
-        self.lambda_id = 20.0
+        self.lambda_id = 5.0
 
         self.dim_gan_z = 512
         self.dim_enc_z = 512
@@ -100,11 +118,19 @@ class Trainer:
 
         self.batch_size = 32
 
-        self.mapping_optimizer= torch.optim.Adam(
-            self.mapping.parameters(), lr=5.e-5, betas=(0.9, 0.98), eps=1e-09, weight_decay=1.e-5,
+        self.mapping_optimizer = torch.optim.Adam(
+            self.mapping.parameters(),
+            lr=5.0e-5,
+            betas=(0.9, 0.98),
+            eps=1e-09,
+            weight_decay=1.0e-5,
         )
         self.discriminator_optimizer = torch.optim.Adam(
-            self.discriminator.parameters(), lr=5.e-5, betas=(0.9, 0.98), eps=1e-09, weight_decay=1.e-5,
+            self.discriminator.parameters(),
+            lr=5.0e-5,
+            betas=(0.9, 0.98),
+            eps=1e-09,
+            weight_decay=1.0e-5,
         )
 
         self.best_model = None
@@ -118,7 +144,7 @@ class Trainer:
         part_size = 2
         num_parts = batch_size // part_size
 
-        #prepare_folder( os.path.join(self.results_dir, str(index)) )
+        # prepare_folder( os.path.join(self.results_dir, str(index)) )
 
         with torch.set_grad_enabled(False):
 
@@ -130,26 +156,33 @@ class Trainer:
 
             zs = sample_zs(batch_size, self.dim_gan_z)
             zs = zs.view(num_parts, part_size, -1)
-            grid = np.zeros((num_parts, part_size, 2, self.img_res, self.img_res, 3), dtype="uint8")
+            grid = np.zeros(
+                (num_parts, part_size, 2, self.img_res, self.img_res, 3), dtype="uint8"
+            )
 
-            for part_idx in range( num_parts ):
+            for part_idx in range(num_parts):
 
                 images = self.gan.forward_image(zs[part_idx, ...])
                 encodings = self.encoder(images)
                 ws = self.mapping(encodings)
                 recon_images = self.gan.forward_latent(ws)
 
-                img = to_image(recon_images, self.img_res ).reshape(part_size, self.img_res, self.img_res, 3)
+                img = to_image(recon_images, self.img_res).reshape(
+                    part_size, self.img_res, self.img_res, 3
+                )
                 grid[part_idx, :, 1, :, :, :] = img
-                img = to_image(images, self.img_res ).reshape(part_size, self.img_res, self.img_res, 3)
+                img = to_image(images, self.img_res).reshape(
+                    part_size, self.img_res, self.img_res, 3
+                )
                 grid[part_idx, :, 0, :, :, :] = img
 
-            grid = np.moveaxis( grid, [0, 1, 2, 3, 4, 5], [0, 1, 3, 2, 4, 5] ).reshape(num_parts, part_size * self.img_res, 2 * self.img_res, 3)
-            grid = grid.reshape( batch_size * self.img_res, 2 * self.img_res, 3 )
+            grid = np.moveaxis(grid, [0, 1, 2, 3, 4, 5], [0, 1, 3, 2, 4, 5]).reshape(
+                num_parts, part_size * self.img_res, 2 * self.img_res, 3
+            )
+            grid = grid.reshape(batch_size * self.img_res, 2 * self.img_res, 3)
 
-            #Image.fromarray( grid ).save( os.path.join(self.results_dir, str(index), "grid.png") )
-            Image.fromarray( grid ).save( os.path.join(self.results_dir, "%d.png" % index ) )
-
+            # Image.fromarray( grid ).save( os.path.join(self.results_dir, str(index), "grid.png") )
+            Image.fromarray(grid).save(os.path.join(self.results_dir, "%d.png" % index))
 
     def save_plot(self, index):
 
@@ -157,27 +190,34 @@ class Trainer:
         for key, val in self.losses.items():
             ax.plot(val, label=key)
         ax.legend()
-        plt.savefig(os.path.join(self.loss_dir,"loss_%d.png" % index), dpi=300)
+        plt.savefig(os.path.join(self.loss_dir, "loss_%d.png" % index), dpi=300)
         plt.cla()
 
     def save_model(self, index):
 
-        torch.save({
-            'step': index,
-            'mapping_state_dict': self.mapping.state_dict(),
-            'discriminator_state_dict': self.discriminator.state_dict(),
-            }, os.path.join(self.checkpoint_dir, "%s_step_%d.pth" % (self.exp_name, index+1)))
+        torch.save(
+            {
+                "step": index,
+                "mapping_state_dict": self.mapping.state_dict(),
+                "discriminator_state_dict": self.discriminator.state_dict(),
+            },
+            os.path.join(
+                self.checkpoint_dir, "%s_step_%d.pth" % (self.exp_name, index + 1)
+            ),
+        )
 
     def save_grads(self, index):
-        plt.figure(figsize=(8,8))
+        plt.figure(figsize=(8, 8))
         plot_grad_flow(self.discriminator.named_parameters())
-        plt.savefig(os.path.join(self.grads_dir, "%d_discriminator.png" % index),dpi=200)
-        plt.close('all')
+        plt.savefig(
+            os.path.join(self.grads_dir, "%d_discriminator.png" % index), dpi=200
+        )
+        plt.close("all")
 
-        plt.figure(figsize=(8,8))
+        plt.figure(figsize=(8, 8))
         plot_grad_flow(self.mapping.named_parameters())
-        plt.savefig(os.path.join(self.grads_dir, "%d_mapping.png" % index),dpi=200)
-        plt.close('all')
+        plt.savefig(os.path.join(self.grads_dir, "%d_mapping.png" % index), dpi=200)
+        plt.close("all")
 
     def train_step(self, index):
 
@@ -188,7 +228,7 @@ class Trainer:
 
             self.discriminator.train()
             self.discriminator.zero_grad()
-            
+
             self.gan.zero_grad()
             self.encoder.zero_grad()
 
@@ -196,7 +236,7 @@ class Trainer:
             real_ws = self.gan.forward_sample(real_zs)
 
             one_label = torch.ones(self.batch_size // 2, device=device_name)
-            real_pred = torch.sigmoid( self.discriminator(real_ws).squeeze(1) )
+            real_pred = torch.sigmoid(self.discriminator(real_ws).squeeze(1))
 
             errD_real = self.bce_loss(real_pred, one_label) * self.lambda_discriminator
             errD_real.backward()
@@ -208,7 +248,7 @@ class Trainer:
             fake_encodings = self.encoder(fake_images)
 
             fake_ws = self.mapping(fake_encodings)
-            fake_pred = torch.sigmoid( self.discriminator(fake_ws).squeeze(1) )
+            fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
 
             errD_fake = self.bce_loss(fake_pred, zero_label) * self.lambda_discriminator
             errD_fake.backward()
@@ -221,9 +261,17 @@ class Trainer:
             fake_ws = self.mapping(fake_encodings)
             remapped_images = self.gan.forward_latent(fake_ws)
             remapped_encodings = self.encoder(remapped_images)
-            fake_pred = torch.sigmoid( self.discriminator(fake_ws).squeeze(1) )
+            fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
 
-            id_loss = torch.mean( torch.abs( fake_encodings - remapped_encodings ) ) * self.lambda_id
+            fc3, fp2, fp1 = fake_encodings
+            rc3, rp2, rp1 = remapped_encodings
+
+            id_loss = (
+                torch.mean(torch.abs(fc3 - rc3))
+                + torch.mean(torch.abs(fp2 - rp2))
+                + torch.mean(torch.abs(fp1 - rp1))
+            ) * self.lambda_id
+
             gen_loss = self.bce_loss(fake_pred, one_label) * self.lambda_discriminator
             mapping_loss = id_loss + gen_loss
 
@@ -233,37 +281,41 @@ class Trainer:
             loss = mapping_loss + discriminator_loss
 
             if mapping_loss < self.best_loss:
-                print("Best Model Yet Achieved -> Prev: %6f, Now: %.6f" % (self.best_loss, mapping_loss))
+                print(
+                    "Best Model Yet Achieved -> Prev: %6f, Now: %.6f"
+                    % (self.best_loss, mapping_loss)
+                )
                 self.best_loss = float(mapping_loss.detach().cpu().data)
                 self.best_model = self.mapping.state_dict()
 
-            if (index+1) % 1000 == 0:
-                self.save_grads(index+1)
+            if (index + 1) % 1000 == 0:
+                self.save_grads(index + 1)
 
-            self.losses["id"].append( float(id_loss.detach().cpu().data) )
-            self.losses["discriminator"].append( float(discriminator_loss.detach().cpu().data) )
-            self.losses["generator"].append( float(gen_loss.detach().cpu().data) )
+            self.losses["id"].append(float(id_loss.detach().cpu().data))
+            self.losses["discriminator"].append(
+                float(discriminator_loss.detach().cpu().data)
+            )
+            self.losses["generator"].append(float(gen_loss.detach().cpu().data))
 
-        print("Step: %d/%d Loss: %.6f" % 
-            ( index+1, n_steps, loss.detach().cpu().data )
-        )
+        print("Step: %d/%d Loss: %.6f" % (index + 1, n_steps, loss.detach().cpu().data))
 
     def train(self):
 
         for i in range(n_steps):
             self.train_step(i)
 
-            if (i+1) % 1000 == 0:
+            if (i + 1) % 1000 == 0:
                 self.save_model(i)
-            if (i+1) % 1000 == 0:
-                self.save_plot(i+1)
-            if (i+1) % 1000 == 0:
-                self.create_recon_grid(i+1)
+            if (i + 1) % 1000 == 0:
+                self.save_plot(i + 1)
+            if (i + 1) % 1000 == 0:
+                self.create_recon_grid(i + 1)
 
-        torch.save( {"mapping": self.best_model}, os.path.join(self.main_path, "best_model.pth") )
+        torch.save(
+            {"mapping": self.best_model}, os.path.join(self.main_path, "best_model.pth")
+        )
 
 
 if __name__ == "__main__":
     trainer = Trainer()
     trainer.train()
-

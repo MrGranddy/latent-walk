@@ -8,10 +8,10 @@ from torch.utils.cpp_extension import load
 module_path = os.path.dirname(__file__)
 print(module_path)
 upfirdn2d_op = load(
-    'upfirdn2d',
+    "upfirdn2d",
     sources=[
-        os.path.join(module_path, 'upfirdn2d.cpp'),
-        os.path.join(module_path, 'upfirdn2d_kernel.cu'),
+        os.path.join(module_path, "upfirdn2d.cpp"),
+        os.path.join(module_path, "upfirdn2d_kernel.cu"),
     ],
 )
 
@@ -61,7 +61,7 @@ class UpFirDn2dBackward(Function):
 
     @staticmethod
     def backward(ctx, gradgrad_input):
-        kernel, = ctx.saved_tensors
+        (kernel,) = ctx.saved_tensors
 
         gradgrad_input = gradgrad_input.reshape(-1, ctx.in_size[2], ctx.in_size[3], 1)
 
@@ -185,4 +185,3 @@ def upfirdn2d_native(
     out = out.permute(0, 2, 3, 1)
 
     return out[:, ::down_y, ::down_x, :]
-
