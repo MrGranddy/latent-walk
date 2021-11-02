@@ -42,11 +42,16 @@ def to_image(tensor, img_res):
 def get_opts_and_encoder_sd(path="pretrained/psp_ffhq_encode.pt"):
     test_opts = TestOptions().parse()
     ckpt = torch.load(path)
-    state_dict = OrderedDict()
+
+    state_dict_encoder = OrderedDict()
+    state_dict_styles = OrderedDict()
 
     for key, val in ckpt["state_dict"].items():
-        if "encoder" in key and "styles" not in key:
-            state_dict[".".join(key.split(".")[1:])] = val
+        if "encoder" in key:
+            if "styles" not in key:
+                state_dict_encoder[".".join(key.split(".")[1:])] = val
+            else:
+                state_dict_styles[".".join(key.split(".")[2:])] = val
 
     opts = ckpt["opts"]
     opts.update(vars(test_opts))
@@ -54,7 +59,7 @@ def get_opts_and_encoder_sd(path="pretrained/psp_ffhq_encode.pt"):
     opts["output_size"] = 1024
     opts["n_styles"] = int(math.log(opts["output_size"], 2)) * 2 - 2
 
-    return opts, state_dict, ckpt["latent_avg"]
+    return opts, state_dict_encoder, state_dict_styles, ckpt["latent_avg"]
 
 
 class ImageEncoder(nn.Module):
@@ -71,12 +76,12 @@ class ImageEncoder(nn.Module):
             param.requires_grad = False
 
     def forward(self, x):
-        x = F.interpolate(x, size=self.input_size)
+        x = F.interpolate(x, size=self.input_size, mode="bilinear")
         return self.encoder(x)
 
 
 class LatentMapping(nn.Module):
-    def __init__(self, opts, latent_avg):
+    def __init__(self, opts, styles_sd, latent_avg):
         super(LatentMapping, self).__init__()
 
         self.styles = nn.ModuleList()
@@ -92,9 +97,11 @@ class LatentMapping(nn.Module):
                 style = GradualStyleBlock(512, 512, 64)
             self.styles.append(style)
 
+        self.styles.load_state_dict(styles_sd)
+
         for style in self.styles:
             for param in style.parameters():
-                param.requires_grad = True
+                param.requires_grad = False
 
         self.latent_avg = latent_avg.to(device_name)
 
@@ -114,7 +121,7 @@ class LatentMapping(nn.Module):
 
         out = torch.stack(latents, dim=1)
 
-        return out + self.latent_avg
+        return out + self.latent_avg.unsqueeze(0)
 
 
 class Discriminator(nn.Module):
@@ -123,7 +130,8 @@ class Discriminator(nn.Module):
 
         self.linears = nn.ModuleList(
             [
-                nn.Linear(input_size, 256),
+                nn.Linear(input_size, 512),
+                nn.Linear(512, 256),
                 nn.Linear(256, 128),
                 nn.Linear(128, 64),
             ]
@@ -173,13 +181,21 @@ class StyleGan(nn.Module):
 
 """
 opts, sd, latent_avg = get_opts_and_encoder_sd()
-print(latent_avg.shape)
-enc = ImageEncoder(opts, sd, 256).to(device_name)
+
+w = latent_avg.unsqueeze(0).to(device_name)
+gan = StyleGan().to(device_name)
+img = gan.forward_latent(w)
+Image.fromarray(to_image(img, 1024)[0, ...]).save("demo.png")
+"""
+"""
+opts, sde, sds = get_opts_and_encoder_sd()
+
+enc = ImageEncoder(opts, sde, 256).to(device_name)
 img = torch.rand(7, 3, 1024, 1024).to(device_name)
 c3, p2, p1 = enc(img)
 print(c3.shape, p2.shape, p1.shape)
 
-mapping = LatentMapping(opts, latent_avg).to(device_name)
+mapping = LatentMapping(opts, sds).to(device_name)
 encoded = mapping((c3, p2, p1))
 
 print(encoded.shape)

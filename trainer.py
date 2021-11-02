@@ -67,11 +67,17 @@ def sample_zs(batch_size, dim_z, mean=0.0, std=1.0):
 def to_image(tensor, img_res):
     tensor = torch.clamp(tensor, -1, 1)
     tensor = (tensor + 1) / 2
-    tensor.clamp(0, 1)
+    #tensor.clamp(0, 1)
     tensor = F.interpolate(
         tensor, size=(img_res, img_res), mode="bilinear", align_corners=True
     )
     return (255 * tensor.cpu().detach()).to(torch.uint8).permute(0, 2, 3, 1).numpy()
+
+
+def aug(tensor):
+
+    tensor.clamp(-1, 1)
+    return tensor
 
 
 class Trainer:
@@ -101,36 +107,28 @@ class Trainer:
 
         self.losses = {"id": [], "discriminator": [], "generator": []}
 
-        opts, sd, latent_avg = get_opts_and_encoder_sd()
+        opts, sde, sds, lavg = get_opts_and_encoder_sd()
 
         self.gan = StyleGan().eval().to(device_name)
-        self.encoder = ImageEncoder(opts, sd, 256).eval().to(device_name)
-        self.mapping = LatentMapping(opts, latent_avg).train().to(device_name)
+        self.encoder = ImageEncoder(opts, sde, 256).eval().to(device_name)
+        self.mapping = LatentMapping(opts, sds, lavg).train().to(device_name)
         self.discriminator = Discriminator().train().to(device_name)
-
-        self.lambda_discriminator = 1.0
-        self.lambda_id = 5.0
 
         self.dim_gan_z = 512
         self.dim_enc_z = 512
         self.dim_w = 512
         self.img_res = 128
 
-        self.batch_size = 32
+        self.batch_size = 24
 
         self.mapping_optimizer = torch.optim.Adam(
-            self.mapping.parameters(),
-            lr=5.0e-5,
-            betas=(0.9, 0.98),
-            eps=1e-09,
-            weight_decay=1.0e-5,
+            list(self.mapping.parameters()) + list(self.encoder.parameters()),
+            lr=2.e-4
         )
-        self.discriminator_optimizer = torch.optim.Adam(
+        self.discriminator_optimizer = torch.optim.SGD(
             self.discriminator.parameters(),
-            lr=5.0e-5,
-            betas=(0.9, 0.98),
-            eps=1e-09,
-            weight_decay=1.0e-5,
+            lr=1.e-3,
+            momentum=0.9,
         )
 
         self.best_model = None
@@ -149,6 +147,8 @@ class Trainer:
         with torch.set_grad_enabled(False):
 
             self.mapping.eval()
+            self.encoder.eval()
+            self.gan.eval()
 
             self.mapping.zero_grad()
             self.gan.zero_grad()
@@ -163,6 +163,7 @@ class Trainer:
             for part_idx in range(num_parts):
 
                 images = self.gan.forward_image(zs[part_idx, ...])
+                images = aug(images)
                 encodings = self.encoder(images)
                 ws = self.mapping(encodings)
                 recon_images = self.gan.forward_latent(ws)
@@ -238,47 +239,56 @@ class Trainer:
             one_label = torch.ones(self.batch_size // 2, device=device_name)
             real_pred = torch.sigmoid(self.discriminator(real_ws).squeeze(1))
 
-            errD_real = self.bce_loss(real_pred, one_label) * self.lambda_discriminator
-            errD_real.backward()
-
             zero_label = torch.zeros(self.batch_size // 2, device=device_name)
-
             fake_zs = sample_zs(self.batch_size // 2, self.dim_gan_z)
             fake_images = self.gan.forward_image(fake_zs)
+
             fake_encodings = self.encoder(fake_images)
 
+            errD_real = self.bce_loss(real_pred, one_label)
+            errD_real.backward()
+
             fake_ws = self.mapping(fake_encodings)
             fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
 
-            errD_fake = self.bce_loss(fake_pred, zero_label) * self.lambda_discriminator
+            errD_fake = self.bce_loss(fake_pred, zero_label)
             errD_fake.backward()
 
-            discriminator_loss = errD_fake + errD_real
+            discriminator_loss = (errD_fake + errD_real) / 2
             self.discriminator_optimizer.step()
 
-            self.mapping.zero_grad()
+            loss = discriminator_loss
+            tot_gen_loss = 0
 
-            fake_ws = self.mapping(fake_encodings)
-            remapped_images = self.gan.forward_latent(fake_ws)
-            remapped_encodings = self.encoder(remapped_images)
-            fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
+            for _ in range(2):
+                self.mapping.zero_grad()
+                self.encoder.zero_grad()
 
-            fc3, fp2, fp1 = fake_encodings
-            rc3, rp2, rp1 = remapped_encodings
+                fake_encodings = self.encoder(fake_images)
+                fake_ws = self.mapping(fake_encodings)
+                remapped_images = self.gan.forward_latent(fake_ws)
+                remapped_encodings = self.encoder(remapped_images)
+                fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
 
-            id_loss = (
-                torch.mean(torch.abs(fc3 - rc3))
-                + torch.mean(torch.abs(fp2 - rp2))
-                + torch.mean(torch.abs(fp1 - rp1))
-            ) * self.lambda_id
+                fc3, fp2, fp1 = fake_encodings
+                rc3, rp2, rp1 = remapped_encodings
 
-            gen_loss = self.bce_loss(fake_pred, one_label) * self.lambda_discriminator
-            mapping_loss = id_loss + gen_loss
+                id_loss = (
+                    torch.mean(torch.abs(fc3 - rc3))
+                    + torch.mean(torch.abs(fp2 - rp2))
+                    + torch.mean(torch.abs(fp1 - rp1))
+                ) * 10
 
-            mapping_loss.backward()
-            self.mapping_optimizer.step()
+                gen_loss = self.bce_loss(fake_pred, one_label)
+                mapping_loss = id_loss + gen_loss
 
-            loss = mapping_loss + discriminator_loss
+                mapping_loss.backward()
+                self.mapping_optimizer.step()
+
+                loss += mapping_loss
+                tot_gen_loss += gen_loss
+
+            tot_gen_loss /= 2
 
             if mapping_loss < self.best_loss:
                 print(
@@ -288,16 +298,25 @@ class Trainer:
                 self.best_loss = float(mapping_loss.detach().cpu().data)
                 self.best_model = self.mapping.state_dict()
 
-            if (index + 1) % 1000 == 0:
+            if (index + 1) % 100 == 0:
                 self.save_grads(index + 1)
 
             self.losses["id"].append(float(id_loss.detach().cpu().data))
             self.losses["discriminator"].append(
                 float(discriminator_loss.detach().cpu().data)
             )
-            self.losses["generator"].append(float(gen_loss.detach().cpu().data))
+            self.losses["generator"].append(float(tot_gen_loss.detach().cpu().data))
 
-        print("Step: %d/%d Loss: %.6f" % (index + 1, n_steps, loss.detach().cpu().data))
+        print(
+            "Step: %d/%d ID Loss: %.6f, GEN Loss: %.6f, DISC Loss: %.6f"
+            % (
+                index + 1,
+                n_steps,
+                id_loss.detach().cpu().data,
+                tot_gen_loss.detach().cpu().data,
+                discriminator_loss.detach().cpu().data,
+            )
+        )
 
     def train(self):
 
@@ -306,9 +325,9 @@ class Trainer:
 
             if (i + 1) % 1000 == 0:
                 self.save_model(i)
-            if (i + 1) % 1000 == 0:
+            if (i + 1) % 100 == 0:
                 self.save_plot(i + 1)
-            if (i + 1) % 1000 == 0:
+            if (i + 1) % 10 == 0:
                 self.create_recon_grid(i + 1)
 
         torch.save(
