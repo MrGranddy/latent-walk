@@ -12,6 +12,8 @@ from model import (
     ImageEncoder,
     Discriminator,
     LatentMapping,
+    Walker,
+    WalkClassifier,
     get_opts_and_encoder_sd,
 )
 
@@ -23,7 +25,7 @@ from PIL import Image
 # Sadakallahülazim Bismillahirrahmanirrahim
 
 n_steps = 100000
-edge_value = 6.0
+edge_value = 2.0
 min_value = 0.5
 
 device_name = "cuda:0"
@@ -64,10 +66,20 @@ def sample_zs(batch_size, dim_z, mean=0.0, std=1.0):
     return zs
 
 
+def sample_walks(batch_size, num_walks):
+
+    eps = torch.rand(batch_size) * (edge_value - min_value) + min_value
+    eps[torch.rand(batch_size) < 0.5] *= -1
+
+    walks = torch.randint(low=0, high=num_walks, size=(batch_size,))
+
+    return walks.to(device_name), eps.to(device_name)
+
+
 def to_image(tensor, img_res):
     tensor = torch.clamp(tensor, -1, 1)
     tensor = (tensor + 1) / 2
-    #tensor.clamp(0, 1)
+    # tensor.clamp(0, 1)
     tensor = F.interpolate(
         tensor, size=(img_res, img_res), mode="bilinear", align_corners=True
     )
@@ -105,30 +117,31 @@ class Trainer:
             if f_name[-3:] == ".py":
                 shutil.copyfile(f_name, os.path.join(self.codes_dir, f_name))
 
-        self.losses = {"id": [], "discriminator": [], "generator": []}
+        self.losses = {"cls": [], "reg": [], "dist": []}
 
         opts, sde, sds, lavg = get_opts_and_encoder_sd()
-
-        self.gan = StyleGan().eval().to(device_name)
-        self.encoder = ImageEncoder(opts, sde, 256).eval().to(device_name)
-        self.mapping = LatentMapping(opts, sds, lavg).train().to(device_name)
-        self.discriminator = Discriminator().train().to(device_name)
 
         self.dim_gan_z = 512
         self.dim_enc_z = 512
         self.dim_w = 512
         self.img_res = 128
+        self.batch_size = 8
+        self.num_walks = 20
 
-        self.batch_size = 24
+        self.gan = StyleGan().eval().to(device_name)
+        self.encoder = ImageEncoder(opts, sde, 256).eval().to(device_name)
+        self.mapping = LatentMapping(opts, sds, lavg).eval().to(device_name)
+        self.walker = Walker(self.num_walks).train().to(device_name)
+        self.classifier = WalkClassifier(self.num_walks).train().to(device_name)
 
-        self.mapping_optimizer = torch.optim.Adam(
-            list(self.mapping.parameters()) + list(self.encoder.parameters()),
-            lr=2.e-4
+        self.walk_optimizer = torch.optim.Adam(
+            self.walker.parameters(),
+            lr=1.0e-4,
         )
-        self.discriminator_optimizer = torch.optim.SGD(
-            self.discriminator.parameters(),
-            lr=1.e-3,
-            momentum=0.9,
+
+        self.classifier_optimizer = torch.optim.Adam(
+            self.classifier.parameters(),
+            lr=1.0e-4,
         )
 
         self.best_model = None
@@ -165,7 +178,8 @@ class Trainer:
                 images = self.gan.forward_image(zs[part_idx, ...])
                 images = aug(images)
                 encodings = self.encoder(images)
-                ws = self.mapping(encodings)
+                diff_ws = self.mapping(encodings)
+                ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
                 recon_images = self.gan.forward_latent(ws)
 
                 img = to_image(recon_images, self.img_res).reshape(
@@ -183,7 +197,9 @@ class Trainer:
             grid = grid.reshape(batch_size * self.img_res, 2 * self.img_res, 3)
 
             # Image.fromarray( grid ).save( os.path.join(self.results_dir, str(index), "grid.png") )
-            Image.fromarray(grid).save(os.path.join(self.results_dir, "%d.png" % index))
+            Image.fromarray(grid).save(
+                os.path.join(self.results_dir, "0_%d.png" % index)
+            )
 
     def save_plot(self, index):
 
@@ -197,124 +213,91 @@ class Trainer:
     def save_model(self, index):
 
         torch.save(
-            {
-                "step": index,
-                "mapping_state_dict": self.mapping.state_dict(),
-                "discriminator_state_dict": self.discriminator.state_dict(),
-            },
+            {"step": index, "walker": self.walker.state_dict()},
             os.path.join(
                 self.checkpoint_dir, "%s_step_%d.pth" % (self.exp_name, index + 1)
             ),
         )
 
     def save_grads(self, index):
-        plt.figure(figsize=(8, 8))
-        plot_grad_flow(self.discriminator.named_parameters())
-        plt.savefig(
-            os.path.join(self.grads_dir, "%d_discriminator.png" % index), dpi=200
-        )
-        plt.close("all")
+
+        models = [("classifier", self.classifier)]
+
+        for name, model in models:
+            plt.figure(figsize=(8, 8))
+            plot_grad_flow(model.named_parameters())
+            plt.savefig(
+                os.path.join(self.grads_dir, "%d_%s.png" % (index, name)), dpi=200
+            )
+            plt.close("all")
 
         plt.figure(figsize=(8, 8))
-        plot_grad_flow(self.mapping.named_parameters())
-        plt.savefig(os.path.join(self.grads_dir, "%d_mapping.png" % index), dpi=200)
+        plt.imshow(self.walker.walks.grad.detach().cpu().numpy())
+        plt.savefig(
+            os.path.join(self.grads_dir, "%d_%s.png" % (index, "walker")), dpi=200
+        )
         plt.close("all")
 
     def train_step(self, index):
 
         with torch.set_grad_enabled(True):
 
-            self.mapping.train()
             self.mapping.zero_grad()
-
-            self.discriminator.train()
-            self.discriminator.zero_grad()
-
-            self.gan.zero_grad()
             self.encoder.zero_grad()
+            self.gan.zero_grad()
+            self.walker.zero_grad()
+            self.classifier.zero_grad()
 
-            real_zs = sample_zs(self.batch_size // 2, self.dim_gan_z)
-            real_ws = self.gan.forward_sample(real_zs)
+            self.walker.train()
+            self.classifier.train()
 
-            one_label = torch.ones(self.batch_size // 2, device=device_name)
-            real_pred = torch.sigmoid(self.discriminator(real_ws).squeeze(1))
+            zs = sample_zs(self.batch_size, self.dim_gan_z)
+            org_images = self.gan.forward_image(zs)
 
-            zero_label = torch.zeros(self.batch_size // 2, device=device_name)
-            fake_zs = sample_zs(self.batch_size // 2, self.dim_gan_z)
-            fake_images = self.gan.forward_image(fake_zs)
+            c3, p2, p1 = self.encoder(aug(org_images))
 
-            fake_encodings = self.encoder(fake_images)
+            walks, eps = sample_walks(self.batch_size, self.num_walks)
+            walked_c3 = self.walker(c3, walks, eps)
+            diff_ws = self.mapping((walked_c3, p2, p1))
+            ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
 
-            errD_real = self.bce_loss(real_pred, one_label)
-            errD_real.backward()
+            walked_images = self.gan.forward_latent(ws)
 
-            fake_ws = self.mapping(fake_encodings)
-            fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
+            cls_out, reg_out = self.classifier(org_images, walked_images)
 
-            errD_fake = self.bce_loss(fake_pred, zero_label)
-            errD_fake.backward()
+            cls_loss = F.cross_entropy(cls_out, walks)
+            reg_loss = torch.mean((reg_out - eps) ** 2) * 0.5
+            w_reg_loss = torch.mean(torch.abs(diff_ws))
 
-            discriminator_loss = (errD_fake + errD_real) / 2
-            self.discriminator_optimizer.step()
+            loss = cls_loss + reg_loss + w_reg_loss
+            loss.backward()
 
-            loss = discriminator_loss
-            tot_gen_loss = 0
+            self.walk_optimizer.step()
+            self.classifier_optimizer.step()
 
-            for _ in range(2):
-                self.mapping.zero_grad()
-                self.encoder.zero_grad()
-
-                fake_encodings = self.encoder(fake_images)
-                fake_ws = self.mapping(fake_encodings)
-                remapped_images = self.gan.forward_latent(fake_ws)
-                remapped_encodings = self.encoder(remapped_images)
-                fake_pred = torch.sigmoid(self.discriminator(fake_ws).squeeze(1))
-
-                fc3, fp2, fp1 = fake_encodings
-                rc3, rp2, rp1 = remapped_encodings
-
-                id_loss = (
-                    torch.mean(torch.abs(fc3 - rc3))
-                    + torch.mean(torch.abs(fp2 - rp2))
-                    + torch.mean(torch.abs(fp1 - rp1))
-                ) * 10
-
-                gen_loss = self.bce_loss(fake_pred, one_label)
-                mapping_loss = id_loss + gen_loss
-
-                mapping_loss.backward()
-                self.mapping_optimizer.step()
-
-                loss += mapping_loss
-                tot_gen_loss += gen_loss
-
-            tot_gen_loss /= 2
-
-            if mapping_loss < self.best_loss:
+            if cls_loss < self.best_loss:
                 print(
                     "Best Model Yet Achieved -> Prev: %6f, Now: %.6f"
-                    % (self.best_loss, mapping_loss)
+                    % (self.best_loss, cls_loss)
                 )
-                self.best_loss = float(mapping_loss.detach().cpu().data)
-                self.best_model = self.mapping.state_dict()
+                self.best_loss = float(cls_loss.detach().cpu().data)
+                self.best_model = self.walker.state_dict()
 
-            if (index + 1) % 100 == 0:
+            if (index + 1) % 1000 == 0:
                 self.save_grads(index + 1)
 
-            self.losses["id"].append(float(id_loss.detach().cpu().data))
-            self.losses["discriminator"].append(
-                float(discriminator_loss.detach().cpu().data)
-            )
-            self.losses["generator"].append(float(tot_gen_loss.detach().cpu().data))
+            self.losses["cls"].append(float(cls_loss.detach().cpu().data))
+            self.losses["reg"].append(float(reg_loss.detach().cpu().data))
+            self.losses["dist"].append(float(w_reg_loss.detach().cpu().data))
 
         print(
-            "Step: %d/%d ID Loss: %.6f, GEN Loss: %.6f, DISC Loss: %.6f"
+            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f"
             % (
                 index + 1,
                 n_steps,
-                id_loss.detach().cpu().data,
-                tot_gen_loss.detach().cpu().data,
-                discriminator_loss.detach().cpu().data,
+                cls_loss.detach().cpu().data,
+                reg_loss.detach().cpu().data,
+                w_reg_loss.detach().cpu().data,
             )
         )
 
@@ -325,9 +308,9 @@ class Trainer:
 
             if (i + 1) % 1000 == 0:
                 self.save_model(i)
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 1000 == 0:
                 self.save_plot(i + 1)
-            if (i + 1) % 10 == 0:
+            if (i + 1) % 1000 == 0:
                 self.create_recon_grid(i + 1)
 
         torch.save(

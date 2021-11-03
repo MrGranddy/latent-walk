@@ -16,7 +16,7 @@ from options.test_options import TestOptions
 
 from training.networks_stylegan2 import Generator
 
-from argparse import Namespace
+from efficientnet_pytorch import EfficientNet
 
 import pickle
 from PIL import Image
@@ -121,7 +121,56 @@ class LatentMapping(nn.Module):
 
         out = torch.stack(latents, dim=1)
 
-        return out + self.latent_avg.unsqueeze(0)
+        return out
+
+
+class Walker(nn.Module):
+    def __init__(self, num_walks):
+        super(Walker, self).__init__()
+
+        self.num_walks = num_walks
+        self.walks = nn.Parameter(torch.randn((self.num_walks, 256)))
+
+    def forward(self, x, w, eps):
+        bs = x.shape[0]
+        x = x.view(bs, 512, 256)
+        u, _, vh = torch.linalg.svd(x, full_matrices=False)
+        s = torch.diag_embed(self.walks[w])
+        walk = u @ s @ vh
+
+        return (x + walk * eps.view(-1, 1, 1)).view(bs, 512, 16, 16)
+
+
+class WalkClassifier(nn.Module):
+    def __init__(self, num_walks):
+        super(WalkClassifier, self).__init__()
+
+        self.num_walks = num_walks
+        self.input_size = 256
+
+        self.entry_conv = nn.Conv2d(6, 3, 1, 1)
+        self.model = EfficientNet.from_pretrained("efficientnet-b0")
+        self.model._fc.weight.requires_grad = False
+
+        self.classifying_head = nn.Linear(1280, self.num_walks)
+        self.regression_head = nn.Linear(1280, 1)
+
+        self.dropout = nn.Dropout(p=0.1)
+
+    def forward(self, x, y):
+
+        bs = x.shape[0]
+
+        x = F.interpolate(x, size=self.input_size, mode="bilinear")
+        y = F.interpolate(x, size=self.input_size, mode="bilinear")
+
+        xy = torch.cat([x, y], dim=1)
+        o = self.entry_conv(xy)
+        o = self.model.extract_features(o)
+        o = F.adaptive_avg_pool2d(o, (1, 1)).view(bs, -1)
+        o = self.dropout(o)
+
+        return self.classifying_head(o), self.regression_head(o)
 
 
 class Discriminator(nn.Module):
@@ -178,6 +227,14 @@ class StyleGan(nn.Module):
         c = torch.zeros(z.shape[0], 0).to(device_name)
         return self.G(z, c)
 
+
+"""
+classifier = WalkClassifier(20)
+x, y = torch.randn(7, 3, 256, 256), torch.randn(7, 3, 256, 256)
+a, b = classifier(x, y)
+
+print(a.shape, b.shape)
+"""
 
 """
 opts, sd, latent_avg = get_opts_and_encoder_sd()
