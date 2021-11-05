@@ -136,12 +136,12 @@ class Trainer:
 
         self.walk_optimizer = torch.optim.Adam(
             self.walker.parameters(),
-            lr=1.0e-4,
+            lr=1.0e-3,
         )
 
         self.classifier_optimizer = torch.optim.Adam(
             self.classifier.parameters(),
-            lr=1.0e-4,
+            lr=1.0e-3,
         )
 
         self.best_model = None
@@ -267,7 +267,7 @@ class Trainer:
 
             cls_loss = F.cross_entropy(cls_out, walks)
             reg_loss = torch.mean((reg_out - eps) ** 2) * 0.5
-            w_reg_loss = torch.mean(torch.abs(diff_ws))
+            w_reg_loss = torch.mean(torch.abs(diff_ws)) * 1.e-3
 
             loss = cls_loss + reg_loss + w_reg_loss
             loss.backward()

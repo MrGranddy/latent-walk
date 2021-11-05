@@ -28,6 +28,7 @@ from collections import OrderedDict
 
 device_name = "cuda:0"
 
+#Bismillahirrahmanirrahim
 
 def to_image(tensor, img_res):
     tensor = torch.clamp(tensor, -1, 1)
