@@ -25,7 +25,7 @@ from PIL import Image
 # Sadakallahülazim Bismillahirrahmanirrahim
 
 n_steps = 100000
-edge_value = 2.0
+edge_value = 3.0
 min_value = 0.5
 
 device_name = "cuda:0"
@@ -104,12 +104,14 @@ class Trainer:
         self.checkpoint_dir = "{}/checkpoints".format(self.main_path)
         self.loss_dir = "{}/losses".format(self.main_path)
         self.results_dir = "{}/visual_results".format(self.main_path)
+        self.walks_dir = "{}/walk_results".format(self.main_path)
         self.grads_dir = "{}/grads".format(self.main_path)
         self.codes_dir = "{}/codes".format(self.main_path)
         os.mkdir(self.main_path)
         os.mkdir(self.checkpoint_dir)
         os.mkdir(self.loss_dir)
         os.mkdir(self.results_dir)
+        os.mkdir(self.walks_dir)
         os.mkdir(self.grads_dir)
         os.mkdir(self.codes_dir)
 
@@ -117,7 +119,7 @@ class Trainer:
             if f_name[-3:] == ".py":
                 shutil.copyfile(f_name, os.path.join(self.codes_dir, f_name))
 
-        self.losses = {"cls": [], "reg": [], "dist": []}
+        self.losses = {"cls": [], "reg": [], "dist": [], "p2_reg": [], "c3_reg": []}
 
         opts, sde, sds, lavg = get_opts_and_encoder_sd()
 
@@ -125,7 +127,7 @@ class Trainer:
         self.dim_enc_z = 512
         self.dim_w = 512
         self.img_res = 128
-        self.batch_size = 8
+        self.batch_size = 6
         self.num_walks = 20
 
         self.gan = StyleGan().eval().to(device_name)
@@ -136,12 +138,12 @@ class Trainer:
 
         self.walk_optimizer = torch.optim.Adam(
             self.walker.parameters(),
-            lr=1.0e-3,
+            lr=1.0e-4,
         )
 
         self.classifier_optimizer = torch.optim.Adam(
             self.classifier.parameters(),
-            lr=1.0e-3,
+            lr=1.0e-4,
         )
 
         self.best_model = None
@@ -197,9 +199,73 @@ class Trainer:
             grid = grid.reshape(batch_size * self.img_res, 2 * self.img_res, 3)
 
             # Image.fromarray( grid ).save( os.path.join(self.results_dir, str(index), "grid.png") )
-            Image.fromarray(grid).save(
-                os.path.join(self.results_dir, "0_%d.png" % index)
+            Image.fromarray(grid).save(os.path.join(self.results_dir, "%d.png" % index))
+
+    def create_walk_grid(self, index):
+
+        part_size = 2
+        num_parts = self.num_walks // part_size
+
+        path = os.path.join(self.walks_dir, str(index))
+        prepare_folder(path)
+
+        with torch.set_grad_enabled(False):
+
+            self.mapping.zero_grad()
+            self.encoder.zero_grad()
+            self.gan.zero_grad()
+            self.walker.zero_grad()
+            self.classifier.zero_grad()
+
+            self.walker.eval()
+            self.classifier.eval()
+
+            zs = sample_zs(1, self.dim_gan_z).to(device_name)
+            eps = torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0]).to(device_name)
+            walks = torch.arange(self.num_walks).to(device_name)
+
+            eps_shape = eps.shape[0]
+
+            org_img = self.gan.forward_image(zs)
+            c3, p2, p1 = self.encoder(aug(org_img))
+
+            org_img = to_image(org_img, 256)
+            Image.fromarray(org_img[0, ...]).save(os.path.join(path, "org_img.png"))
+
+            zs = zs.view(1, 1, self.dim_gan_z).repeat(self.num_walks, eps_shape, 1)
+            zs = zs.view(num_parts, part_size, eps_shape, self.dim_gan_z)
+
+            grid = np.zeros(
+                (num_parts, part_size, eps_shape, self.img_res, self.img_res, 3),
+                dtype="uint8",
             )
+
+            walks = walks.view(num_parts, part_size, 1).repeat(1, 1, eps_shape)
+            eps = eps.view(1, -1).repeat(part_size, 1)
+
+            c3 = c3.repeat(eps_shape * part_size, 1, 1, 1)
+            p2 = p2.repeat(eps_shape * part_size, 1, 1, 1)
+            p1 = p1.repeat(eps_shape * part_size, 1, 1, 1)
+
+            for part_idx in range(num_parts):
+
+                walked_p1 = self.walker(p1, walks[part_idx, ...].view(-1), eps.view(-1))
+                diff_ws = self.mapping((c3, p2, walked_p1))
+                ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
+                walked_images = self.gan.forward_latent(ws)
+                img = to_image(walked_images, self.img_res).reshape(
+                    part_size, eps_shape, self.img_res, self.img_res, 3
+                )
+                grid[part_idx, ...] = img
+
+            grid = np.moveaxis(grid, [0, 1, 2, 3, 4, 5], [0, 1, 3, 2, 4, 5]).reshape(
+                num_parts, part_size * self.img_res, eps_shape * self.img_res, 3
+            )
+
+            for part_idx in range(num_parts):
+                Image.fromarray(grid[part_idx, ...]).save(
+                    os.path.join(path, str(part_idx) + ".png")
+                )
 
     def save_plot(self, index):
 
@@ -232,7 +298,7 @@ class Trainer:
             plt.close("all")
 
         plt.figure(figsize=(8, 8))
-        plt.imshow(self.walker.walks.grad.detach().cpu().numpy())
+        plt.imshow(self.walker.log_mat_half.grad.detach().cpu().numpy())
         plt.savefig(
             os.path.join(self.grads_dir, "%d_%s.png" % (index, "walker")), dpi=200
         )
@@ -257,19 +323,22 @@ class Trainer:
             c3, p2, p1 = self.encoder(aug(org_images))
 
             walks, eps = sample_walks(self.batch_size, self.num_walks)
-            walked_c3 = self.walker(c3, walks, eps)
-            diff_ws = self.mapping((walked_c3, p2, p1))
+            walked_p1 = self.walker(p1, walks, eps)
+            diff_ws = self.mapping((c3, p2, walked_p1))
             ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
 
             walked_images = self.gan.forward_latent(ws)
+            c3w, p2w, p1w = self.encoder(aug(walked_images))
 
-            cls_out, reg_out = self.classifier(org_images, walked_images)
+            cls_out, reg_out = self.classifier(walked_p1, p1w)
 
             cls_loss = F.cross_entropy(cls_out, walks)
-            reg_loss = torch.mean((reg_out - eps) ** 2) * 0.5
-            w_reg_loss = torch.mean(torch.abs(diff_ws)) * 1.e-3
+            reg_loss = torch.mean((reg_out - (eps / edge_value)) ** 2) * 1.0e-1
+            w_reg_loss = torch.mean(torch.abs(diff_ws)) * 1.0e-3
+            c3_reg = torch.mean( (c3 - c3w) ** 2 )
+            p2_reg = torch.mean( (p2 - p2w) ** 2 )
 
-            loss = cls_loss + reg_loss + w_reg_loss
+            loss = cls_loss + reg_loss + w_reg_loss + c3_reg + p2_reg
             loss.backward()
 
             self.walk_optimizer.step()
@@ -289,15 +358,19 @@ class Trainer:
             self.losses["cls"].append(float(cls_loss.detach().cpu().data))
             self.losses["reg"].append(float(reg_loss.detach().cpu().data))
             self.losses["dist"].append(float(w_reg_loss.detach().cpu().data))
+            self.losses["p2_reg"].append(float(c3_reg.detach().cpu().data))
+            self.losses["c3_reg"].append(float(c3_reg.detach().cpu().data))
 
         print(
-            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f"
+            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f, C3: %.6f, P2: %.6f"
             % (
                 index + 1,
                 n_steps,
                 cls_loss.detach().cpu().data,
                 reg_loss.detach().cpu().data,
                 w_reg_loss.detach().cpu().data,
+                c3_reg.detach().cpu().data,
+                c3_reg.detach().cpu().data
             )
         )
 
@@ -312,6 +385,8 @@ class Trainer:
                 self.save_plot(i + 1)
             if (i + 1) % 1000 == 0:
                 self.create_recon_grid(i + 1)
+            if (i + 1) % 1000 == 0:
+                self.create_walk_grid(i + 1)
 
         torch.save(
             {"mapping": self.best_model}, os.path.join(self.main_path, "best_model.pth")

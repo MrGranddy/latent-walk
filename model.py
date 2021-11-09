@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from os import stat_result
 from typing import OrderedDict
 import torch
@@ -14,9 +15,10 @@ from psp_models.psp import pSp
 from psp_models.encoders.psp_encoders import GradualStyleEncoder, GradualStyleBlock
 from options.test_options import TestOptions
 
-from training.networks_stylegan2 import Generator
+from training.networks_stylegan2 import Conv2dLayer, Generator
 
-from efficientnet_pytorch import EfficientNet
+from torchvision.models.resnet import BasicBlock
+
 
 import pickle
 from PIL import Image
@@ -28,7 +30,8 @@ from collections import OrderedDict
 
 device_name = "cuda:0"
 
-#Bismillahirrahmanirrahim
+# Bismillahirrahmanirrahim
+
 
 def to_image(tensor, img_res):
     tensor = torch.clamp(tensor, -1, 1)
@@ -130,18 +133,26 @@ class Walker(nn.Module):
         super(Walker, self).__init__()
 
         self.num_walks = num_walks
-        self.walks = nn.Parameter(torch.randn((self.num_walks, 256)))
+        self.log_mat_half = nn.Parameter(torch.randn([512, 512]), True)
+
 
     def forward(self, x, w, eps):
         bs = x.shape[0]
-        x = x.view(bs, 512, 256)
+        x = x.view(bs, 512, 64 * 64).transpose(1, 2)
+
+        mat = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))
+
         u, _, vh = torch.linalg.svd(x, full_matrices=False)
-        s = torch.diag_embed(self.walks[w])
+        s = torch.diag_embed(mat[w])
         walk = u @ s @ vh
+        walked = (x + walk * eps.view(-1, 1, 1) * 256).transpose(1, 2)
 
-        return (x + walk * eps.view(-1, 1, 1)).view(bs, 512, 16, 16)
+        return walked.view(bs, 512, 64, 64)
 
 
+# TODO: BAĞIMSIZ YAAAAAP AAAA BAĞIMSIZ OLSUUUUN 20 TANE SEEEÇ
+# TODO: FARK BESSSLEEEEE
+# TODO: GERİ SOK FEATURECUYA O DAHA İYİ VALLA BAK
 class WalkClassifier(nn.Module):
     def __init__(self, num_walks):
         super(WalkClassifier, self).__init__()
@@ -149,29 +160,41 @@ class WalkClassifier(nn.Module):
         self.num_walks = num_walks
         self.input_size = 256
 
-        self.entry_conv = nn.Conv2d(6, 3, 1, 1)
-        self.model = EfficientNet.from_pretrained("efficientnet-b0")
-        self.model._fc.weight.requires_grad = False
+        self.layers = nn.ModuleList([])
+    
 
-        self.classifying_head = nn.Linear(1280, self.num_walks)
-        self.regression_head = nn.Linear(1280, 1)
+        for _ in range(5):
+            downsample = nn.Sequential(
+                nn.Conv2d(512, 512, 1, stride=2), nn.BatchNorm2d(512)
+            )
+            self.layers.append(
+                nn.Sequential(
+                    BasicBlock(512, 512, stride=1, downsample=None),
+                    BasicBlock(512, 512, stride=2, downsample=downsample),
+                )
+            )
 
-        self.dropout = nn.Dropout(p=0.1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.classifying_head = nn.Linear(512, self.num_walks)
+        self.regression_head = nn.Linear(512, 1)
+
+        #self.dropout = nn.Dropout(p=0.1)
 
     def forward(self, x, y):
 
         bs = x.shape[0]
 
-        x = F.interpolate(x, size=self.input_size, mode="bilinear")
-        y = F.interpolate(x, size=self.input_size, mode="bilinear")
+        # xy = torch.cat([x, y], dim=1) # 1024
+        xy = x - y
 
-        xy = torch.cat([x, y], dim=1)
-        o = self.entry_conv(xy)
-        o = self.model.extract_features(o)
-        o = F.adaptive_avg_pool2d(o, (1, 1)).view(bs, -1)
-        o = self.dropout(o)
+        for layer in self.layers:
+            xy = layer(xy)
 
-        return self.classifying_head(o), self.regression_head(o)
+        xy = self.avgpool(xy)
+        xy = xy.view(bs, -1)
+
+        return self.classifying_head(xy), self.regression_head(xy)
 
 
 class Discriminator(nn.Module):
@@ -228,6 +251,52 @@ class StyleGan(nn.Module):
         c = torch.zeros(z.shape[0], 0).to(device_name)
         return self.G(z, c)
 
+"""
+model = WalkClassifier(20).to(device_name)
+inp1 = torch.randn(32, 512, 64, 64).to(device_name)
+inp2 = torch.randn(32, 512, 64, 64).to(device_name)
+a, b = model(inp1, inp2)
+
+print(a.shape, b.shape)
+
+model = Walker(20).to(device_name)
+walks = torch.randint(low=0, high=20, size=(32,)).to(device_name)
+eps = (torch.rand(32) - 0.5).to(device_name)
+p1 = torch.randn(32, 512, 64, 64).to(device_name)
+print(model(p1, walks, eps).shape)
+"""
+
+"""
+opts, sde, sds, lavg = get_opts_and_encoder_sd()
+encoder = ImageEncoder(opts, sde, 256).eval().to(device_name)
+mapper = LatentMapping(opts, sds, lavg).eval().to(device_name)
+gan = StyleGan().eval().to(device_name)
+
+path = "bby14_a.png"
+
+img = np.array(Image.open(path))[..., :3].astype("float32") / 255
+img -= 0.5
+img /= 0.5
+img = torch.tensor(img).unsqueeze(0).to(device_name)
+img = img.transpose(3,2)
+img = img.transpose(2,1)
+encoding = encoder(img)
+diff_ws = mapper(encoding)
+ws = diff_ws + mapper.latent_avg.unsqueeze(0)
+
+img = gan.forward_latent(ws)
+remapped = to_image(img, 1024)[0, ...]
+org_img = np.array(Image.open(path))[..., :3].astype("uint8")
+final = np.concatenate( (org_img, remapped), axis=1 )
+Image.fromarray(final).save("demo.png")
+
+"""
+
+"""
+for i in range(10):
+    img = gan.forward_latent(ws + torch.randn(ws.shape, device=device_name) * 0.3)
+    Image.fromarray(to_image(img, 1024)[0, ...]).save("demo%d.png" % i)
+"""
 
 """
 classifier = WalkClassifier(20)
