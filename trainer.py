@@ -119,7 +119,7 @@ class Trainer:
             if f_name[-3:] == ".py":
                 shutil.copyfile(f_name, os.path.join(self.codes_dir, f_name))
 
-        self.losses = {"cls": [], "reg": [], "dist": [], "p2_reg": [], "c3_reg": []}
+        self.losses = {"cls": [], "reg": [], "dist": [], "p1_reg": [], "c3_reg": []}
 
         opts, sde, sds, lavg = get_opts_and_encoder_sd()
 
@@ -249,8 +249,8 @@ class Trainer:
 
             for part_idx in range(num_parts):
 
-                walked_p1 = self.walker(p1, walks[part_idx, ...].view(-1), eps.view(-1))
-                diff_ws = self.mapping((c3, p2, walked_p1))
+                walked_p2 = self.walker(p2, walks[part_idx, ...].view(-1), eps.view(-1))
+                diff_ws = self.mapping((c3, walked_p2, p1))
                 ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
                 walked_images = self.gan.forward_latent(ws)
                 img = to_image(walked_images, self.img_res).reshape(
@@ -323,22 +323,22 @@ class Trainer:
             c3, p2, p1 = self.encoder(aug(org_images))
 
             walks, eps = sample_walks(self.batch_size, self.num_walks)
-            walked_p1 = self.walker(p1, walks, eps)
-            diff_ws = self.mapping((c3, p2, walked_p1))
+            walked_p2 = self.walker(p2, walks, eps)
+            diff_ws = self.mapping((c3, walked_p2, p1))
             ws = diff_ws + self.mapping.latent_avg.unsqueeze(0)
 
             walked_images = self.gan.forward_latent(ws)
             c3w, p2w, p1w = self.encoder(aug(walked_images))
 
-            cls_out, reg_out = self.classifier(walked_p1, p1w)
+            cls_out, reg_out = self.classifier(walked_p2, p2w)
 
             cls_loss = F.cross_entropy(cls_out, walks)
             reg_loss = torch.mean((reg_out - (eps / edge_value)) ** 2) * 1.0e-1
             w_reg_loss = torch.mean(torch.abs(diff_ws)) * 1.0e-3
             c3_reg = torch.mean( (c3 - c3w) ** 2 )
-            p2_reg = torch.mean( (p2 - p2w) ** 2 )
+            p1_reg = torch.mean( (p1 - p1w) ** 2 )
 
-            loss = cls_loss + reg_loss + w_reg_loss + c3_reg + p2_reg
+            loss = cls_loss + reg_loss + w_reg_loss + c3_reg + p1_reg
             loss.backward()
 
             self.walk_optimizer.step()
@@ -358,11 +358,11 @@ class Trainer:
             self.losses["cls"].append(float(cls_loss.detach().cpu().data))
             self.losses["reg"].append(float(reg_loss.detach().cpu().data))
             self.losses["dist"].append(float(w_reg_loss.detach().cpu().data))
-            self.losses["p2_reg"].append(float(c3_reg.detach().cpu().data))
+            self.losses["p1_reg"].append(float(p1_reg.detach().cpu().data))
             self.losses["c3_reg"].append(float(c3_reg.detach().cpu().data))
 
         print(
-            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f, C3: %.6f, P2: %.6f"
+            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f, C3: %.6f, P1: %.6f"
             % (
                 index + 1,
                 n_steps,
@@ -370,7 +370,7 @@ class Trainer:
                 reg_loss.detach().cpu().data,
                 w_reg_loss.detach().cpu().data,
                 c3_reg.detach().cpu().data,
-                c3_reg.detach().cpu().data
+                p1_reg.detach().cpu().data
             )
         )
 

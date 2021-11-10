@@ -138,7 +138,7 @@ class Walker(nn.Module):
 
     def forward(self, x, w, eps):
         bs = x.shape[0]
-        x = x.view(bs, 512, 64 * 64).transpose(1, 2)
+        x = x.view(bs, 512, 32 * 32).transpose(1, 2)
 
         mat = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))
 
@@ -147,7 +147,7 @@ class Walker(nn.Module):
         walk = u @ s @ vh
         walked = (x + walk * eps.view(-1, 1, 1) * 256).transpose(1, 2)
 
-        return walked.view(bs, 512, 64, 64)
+        return walked.view(bs, 512, 32, 32)
 
 
 # TODO: BAĞIMSIZ YAAAAAP AAAA BAĞIMSIZ OLSUUUUN 20 TANE SEEEÇ
