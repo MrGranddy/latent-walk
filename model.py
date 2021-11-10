@@ -1,21 +1,15 @@
-from abc import abstractmethod
-from os import stat_result
-from typing import OrderedDict
+
 import torch
 import torch.nn as nn
-import torchvision.models as models
 import torch.nn.functional as F
-import torch.nn.init as init
-from torch.autograd import Variable
 
-from loading import load_generator
 import matplotlib.pyplot as plt
 
 from psp_models.psp import pSp
 from psp_models.encoders.psp_encoders import GradualStyleEncoder, GradualStyleBlock
 from options.test_options import TestOptions
 
-from training.networks_stylegan2 import Conv2dLayer, Generator
+from training.networks_stylegan2 import Generator
 
 from torchvision.models.resnet import BasicBlock
 
@@ -136,18 +130,17 @@ class Walker(nn.Module):
         self.log_mat_half = nn.Parameter(torch.randn([512, 512]), True)
 
 
-    def forward(self, x, w, eps):
+    def forward(self, x, w, eps): # bs, 512
         bs = x.shape[0]
-        x = x.view(bs, 512, 32 * 32).transpose(1, 2)
+        walks = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))[w]
+        walks = walks * eps.view(bs, 1) * 4
+        walked = x
+        walked[:, 7, :] += walks
+        walked[:, 8, :] += walks
+        walked[:, 9, :] += walks
+        walked[:, 10, :] += walks
 
-        mat = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))
-
-        u, _, vh = torch.linalg.svd(x, full_matrices=False)
-        s = torch.diag_embed(mat[w])
-        walk = u @ s @ vh
-        walked = (x + walk * eps.view(-1, 1, 1) * 256).transpose(1, 2)
-
-        return walked.view(bs, 512, 32, 32)
+        return walked
 
 
 # TODO: BAĞIMSIZ YAAAAAP AAAA BAĞIMSIZ OLSUUUUN 20 TANE SEEEÇ
