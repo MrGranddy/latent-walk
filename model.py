@@ -127,18 +127,19 @@ class Walker(nn.Module):
         super(Walker, self).__init__()
 
         self.num_walks = num_walks
-        self.log_mat_half = nn.Parameter(torch.randn([512, 512]), True)
+        self.log_mat_half = nn.Parameter(torch.randn([num_walks, 512 * 4]), True)
 
 
     def forward(self, x, w, eps): # bs, 512
         bs = x.shape[0]
-        walks = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))[w]
-        walks = walks * eps.view(bs, 1) * 4
+        #walks = torch.matrix_exp(self.log_mat_half - self.log_mat_half.transpose(0, 1))[w]
+        walks = self.log_mat_half[w]
+        walks = walks * eps.view(bs, 1) * (4/22)
         walked = x
-        walked[:, 7, :] += walks
-        walked[:, 8, :] += walks
-        walked[:, 9, :] += walks
-        walked[:, 10, :] += walks
+        walked[:, 7, :] += walks[:, :512]
+        walked[:, 8, :] += walks[:, 512:512*2]
+        walked[:, 9, :] += walks[:, 512*2:512*3]
+        walked[:, 10, :] += walks[:, 512*3:]
 
         return walked
 

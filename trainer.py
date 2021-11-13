@@ -119,7 +119,7 @@ class Trainer:
             if f_name[-3:] == ".py":
                 shutil.copyfile(f_name, os.path.join(self.codes_dir, f_name))
 
-        self.losses = {"cls": [], "reg": [], "dist": [], "p2_reg": [], "c3_reg": []}
+        self.losses = {"cls": [], "reg": [], "dist": [], "p2_reg": [], "c3_reg": [], "id_loss": []}
 
         opts, sde, sds, lavg = get_opts_and_encoder_sd()
 
@@ -127,7 +127,7 @@ class Trainer:
         self.dim_enc_z = 512
         self.dim_w = 512
         self.img_res = 128
-        self.batch_size = 6
+        self.batch_size = 18
         self.num_walks = 20
 
         self.gan = StyleGan().eval().to(device_name)
@@ -333,12 +333,13 @@ class Trainer:
             cls_out, reg_out = self.classifier(p1, p1w)
 
             cls_loss = F.cross_entropy(cls_out, walks)
-            reg_loss = torch.mean((reg_out - (eps / edge_value)) ** 2) * 1.0e-1
-            w_reg_loss = torch.mean(torch.abs(diff_ws)) * 1.0e-3
+            reg_loss = torch.mean((reg_out - (eps / edge_value)) ** 2)
+            w_reg_loss = torch.mean(torch.abs(diff_ws))
             c3_reg = torch.mean( (c3 - c3w) ** 2 )
             p2_reg = torch.mean( (p2 - p2w) ** 2 )
+            id_loss = torch.mean( torch.abs( walked_images - org_images ) )
 
-            loss = cls_loss + reg_loss + w_reg_loss + c3_reg + p2_reg
+            loss = cls_loss + reg_loss + w_reg_loss + c3_reg + p2_reg + id_loss
             loss.backward()
 
             self.walk_optimizer.step()
@@ -360,9 +361,10 @@ class Trainer:
             self.losses["dist"].append(float(w_reg_loss.detach().cpu().data))
             self.losses["p2_reg"].append(float(p2_reg.detach().cpu().data))
             self.losses["c3_reg"].append(float(c3_reg.detach().cpu().data))
+            self.losses["id_loss"].append(float(id_loss.detach().cpu().data))
 
         print(
-            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f, C3: %.6f, P2: %.6f"
+            "Step: %d/%d CLS Loss: %.6f, REG Loss: %.6f, DIST Loss: %.6f, C3: %.6f, P2: %.6f, ID: %.6f"
             % (
                 index + 1,
                 n_steps,
@@ -370,7 +372,8 @@ class Trainer:
                 reg_loss.detach().cpu().data,
                 w_reg_loss.detach().cpu().data,
                 c3_reg.detach().cpu().data,
-                p2_reg.detach().cpu().data
+                p2_reg.detach().cpu().data,
+                id_loss.detach().cpu().data
             )
         )
 
